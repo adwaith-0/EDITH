@@ -1,0 +1,15 @@
+const express = require('express');
+const service = require('../services/rentalService');
+const { verifyToken } = require('../middleware/auth');
+const { apiError } = require('../services/rentalShared');
+const router = express.Router();
+const handler = fn => async (req, res) => { try { await fn(req, res); } catch (error) { apiError(res, error); } };
+router.get('/', handler(async (req, res) => res.json({ rentals: await service.search(req.query) })));
+router.get('/mine', verifyToken, handler(async (req, res) => res.json({ rentals: await service.mine(req.user.id) })));
+router.post('/public-demo', verifyToken, handler(async (req,res) => res.json({id:await require('../services/demoMode').preparePublic(req.body)})));
+router.post('/', verifyToken, handler(async (req, res) => res.status(201).json({ rental: await service.create(req.user.id, req.body) })));
+router.post('/:id/evidence',verifyToken,handler(async(req,res)=>res.json({evidence:await require('../services/listingEvidence').verify(req.user.id,req.params.id,req.body)})));
+router.patch('/:id', verifyToken, handler(async (req, res) => res.json({ rental: await service.update(req.user.id, req.params.id, req.body) })));
+router.get('/:id/availability',handler(async(req,res)=>res.json({availability:await require('../services/rentalAvailability').availability(req.params.id,req.query.start,req.query.durationMinutes)})));
+router.get('/:id', handler(async (req, res) => res.json({ rental: await service.get(req.params.id) })));
+module.exports = router;

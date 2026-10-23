@@ -1,0 +1,1 @@
+const fs = require('fs'); fs.copyFileSync('C:\\Users\\adwai\\.gemini\\antigravity\\brain\\e2801843-7518-433b-ba2a-9f044b3bc7d6\\uploaded_image_1768233579702.png', 'c:\\Users\\adwai\\OneDrive\\Desktop\\ec wevapp\\public\\torq-logo.jpg'); console.log('Logo copied successfully');

@@ -1,0 +1,210 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  USER
+  ADMIN
+}
+
+enum VehicleType {
+  CAR
+  SCOOTER
+  BIKE
+}
+
+enum BookingStatus {
+  PENDING
+  REQUESTED
+  CONFIRMED
+  IN_PROGRESS
+  COMPLETED
+  DECLINED
+  CANCELLED
+  EXPIRED
+}
+
+enum PaymentStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  DEMO_NO_MONEY_COLLECTED
+}
+
+enum StationKind {
+  PUBLIC
+  PRIVATE_RENTAL
+}
+
+model User {
+  id           String   @id @default(uuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  role         UserRole @default(USER)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  bookings     Booking[]
+  stations     Station[]
+  vehicles     Vehicle[]
+
+  @@index([role])
+}
+
+model Station {
+  id                           String      @id @default(uuid())
+  name                         String
+  lat                          Float
+  lng                          Float
+  address                      String
+  kind                         StationKind @default(PUBLIC)
+  source                       String      @default("LEGACY")
+  ownerId                      String?
+  published                    Boolean     @default(false)
+  hourlyRatePaise               Int?
+  parking                      String?
+  accessInstructions           String?
+  restrictedAccessInstructions String?
+  terms                        String?
+  imageUrl                     String?
+  createdAt                    DateTime    @default(now())
+  updatedAt                    DateTime    @updatedAt
+  owner                        User?       @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+  connectors                   Connector[]
+  bookings                     Booking[]
+  availabilityWindows          AvailabilityWindow[]
+  specificationsVerifiedAt     DateTime?
+  specificationEvidence        String?
+  parkingIncluded              Boolean?
+  equipmentStatus              String @default("UNKNOWN")
+  statusReportedAt             DateTime?
+  reports                      ChargerReport[]
+
+  @@index([ownerId])
+  @@index([kind, published])
+}
+
+model Connector {
+  id            String  @id @default(uuid())
+  stationId     String
+  connectorType String
+  powerKw       Float?
+  currentType   String?
+  slotCount     Int     @default(1)
+  station       Station @relation(fields: [stationId], references: [id], onDelete: Cascade)
+  bookings      Booking[]
+
+  @@index([stationId])
+}
+
+model AvailabilityWindow {
+  id        String   @id @default(uuid())
+  stationId String
+  startsAt  DateTime
+  endsAt    DateTime
+  station   Station  @relation(fields: [stationId], references: [id], onDelete: Cascade)
+
+  @@index([stationId, startsAt])
+}
+
+model Vehicle {
+  specificationsVerifiedAt DateTime?
+  id                 String      @id @default(uuid())
+  ownerId            String?
+  vehicleType        VehicleType
+  model              String
+  connectorTypes     String[]    @default([])
+  batteryCapacityKwh Float?
+  rangeKm            Float?
+  externalVehicleId  String?
+  metadata           Json?
+  createdAt          DateTime    @default(now())
+  owner              User?       @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+  bookings           Booking[]
+
+  @@index([ownerId])
+}
+
+model Booking {
+  reports            ChargerReport[]
+  id                 String        @id @default(uuid())
+  userId             String
+  stationId          String
+  connectorId        String
+  vehicleId          String
+  status             BookingStatus @default(REQUESTED)
+  vehicleModel       String?
+  slotStart          DateTime
+  slotEnd            DateTime
+  expiresAt          DateTime
+  amountCents        Int           // Legacy name: integer INR paise.
+  energyKwh          Float?        // Measured only; unavailable in this prototype.
+  quoteSnapshot      Json?
+  idempotencyKey     String?
+  requestFingerprint String?
+  hostResponse       String?
+  respondedAt        DateTime?
+  cancelledBy        String?
+  sessionStartedAt   DateTime?
+  sessionCompletedAt DateTime?
+  paymentState       PaymentStatus @default(DEMO_NO_MONEY_COLLECTED)
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+  user               User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  station            Station       @relation(fields: [stationId], references: [id], onDelete: Cascade)
+  connector          Connector     @relation(fields: [connectorId], references: [id], onDelete: Cascade)
+  vehicle            Vehicle       @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  payments           Payment[]
+
+  @@unique([userId, idempotencyKey])
+  @@index([status])
+  @@index([slotStart])
+  @@index([slotEnd])
+  @@index([userId])
+  @@index([stationId])
+  @@index([connectorId, status, slotStart, slotEnd])
+}
+
+model Payment {
+  id          String        @id @default(uuid())
+  bookingId   String
+  status      PaymentStatus @default(PENDING)
+  amountCents Int
+  providerRef String?
+  createdAt   DateTime      @default(now())
+  booking     Booking       @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@index([createdAt])
+  @@index([status])
+}
+
+model Audit {
+  id         String   @id @default(uuid())
+  entityType String
+  entityId   String
+  action     String
+  data       Json?
+  createdAt  DateTime @default(now())
+
+  @@index([entityType])
+  @@index([createdAt])
+}
+
+model ChargerReport {
+  id String @id @default(uuid())
+  stationId String
+  bookingId String?
+  reporterId String
+  kind String
+  notes String?
+  createdAt DateTime @default(now())
+  resolvedAt DateTime?
+  station Station @relation(fields:[stationId],references:[id],onDelete:Cascade)
+  booking Booking? @relation(fields:[bookingId],references:[id],onDelete:Cascade)
+  @@index([stationId,createdAt])
+  @@index([bookingId])
+}
