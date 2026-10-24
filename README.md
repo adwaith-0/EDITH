@@ -1,6 +1,40 @@
 # EDITH Charge
 
-Private EV-charger access rentals with explicit host approval. This extends the existing Next.js 15 / React / TypeScript / Tailwind / Zustand application and its Express / Prisma / PostgreSQL backend. Public stations and EV trip planning support the rental journey. One account can drive and host; administrator access remains separate.
+*AIBoomi Startup Weekend prototype submission.*
+
+EDITH Charge helps EV drivers discover chargers, plan trips and request charging access from local hosts. It addresses the difficulty of finding suitable charging options by bringing private charger rentals, public-station discovery and trip planning into one application.
+
+## Product demo
+
+**Hosted prototype: [Open EDITH Charge](https://edith-orcin-psi.vercel.app/)**
+
+Start with **Rent a Charger**, explore **Public Stations** or **Plan a Trip**, and open **AI Concierge** to try natural-language booking and the AI Demo Lab. Use the [demo accounts below](#demo-accounts) to explore driver and host workflows. The [demo walkthrough](DEMO.md) explains the complete prototype journey.
+
+The prototype uses labelled synthetic listings and booking simulations. Demo payments collect no money, and public-station simulations do not reserve physical chargers.
+
+## Idea and key features
+
+The idea is to make private charging access discoverable: hosts list their chargers, rates and available hours, while drivers review a quote and request a slot. Private rentals require explicit host approval. AI helps users describe their needs, understand options and prepare listing information; the backend controls permissions, prices and booking state.
+
+- **Driver journey:** saved vehicles, charger search, quotes, rental requests, booking history and session receipts.
+- **Host journey:** charger listings, dated availability, request approval and session management.
+- **Discovery and trips:** public charger maps, place search, road routes and estimated charging stops.
+- **AI assistance:** conversational booking, charger-label extraction, listing drafts, English/Hindi/Malayalam guidance and owner-only host insights.
+- **Voice and administration:** speech input, neural English replies and a separate administrator dashboard.
+
+## Technology stack and tools
+
+| Area | Technologies |
+| --- | --- |
+| Frontend | Next.js 15, React 19, TypeScript, Tailwind CSS, Zustand |
+| Backend | Node.js, Express, Socket.IO, JWT authentication |
+| Database | PostgreSQL, Prisma ORM, Neon cloud database |
+| Maps and routing | Leaflet, OpenStreetMap, Photon, OSRM |
+| AI models | Ollama Cloud; `gpt-oss:20b` for text and `gemma4:31b` for vision |
+| Voice | Kokoro neural text-to-speech, ONNX Runtime, browser speech recognition |
+| Hosting and source control | Vercel Services, GitHub, npm |
+
+One account can drive and host; administrator access remains separate. Setup instructions and implementation details follow.
 
 ## Run locally
 
