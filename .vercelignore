@@ -8,3 +8,5 @@ test-results
 coverage
 *.log
 *.tsbuildinfo
+.agents
+skills-lock.json

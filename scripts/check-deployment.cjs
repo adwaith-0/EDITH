@@ -22,8 +22,10 @@ const allowedFlags = new Set(['--skip-ai', '--skip-realtime', '--skip-maps']);
 for (const flag of flags) assert.ok(allowedFlags.has(flag), `Unknown option: ${flag}`);
 const report = { checkedAt: new Date().toISOString(), deployment: web, api, checks: [], fixtures: { scope: 'Only named synthetic QA listing, saved vehicle and booking records created by this run.' } };
 const secrets = [process.env.EDITH_ADMIN_PASSWORD].filter(Boolean);
-let host, driver, listing, vehicle, socket;
+let host, driver, qaDriver, listing, vehicle, socket, sessionBooking;
 const bookings = [];
+const autopilotBookings = [];
+const completedBookings = new Set();
 const updates = new Set();
 
 function safeMessage(error) {
@@ -140,6 +142,29 @@ async function main() {
 
   host = await check('Demo host login', () => login('host@edith.demo', 'EdithDemo123!'));
   driver = await check('Demo driver login', () => login('driver@edith.demo', 'EdithDemo123!'));
+  const qaEmail = `qa-${randomUUID()}@edith.invalid`;
+  const qaPassword = randomUUID() + randomUUID();
+  secrets.push(qaPassword);
+  qaDriver = await check('New synthetic driver signs up', async () => {
+    const data = await request('/api/auth/signup', { status: 201, body: { email: qaEmail, password: qaPassword, name: run } });
+    assert.ok(data.token && data.user?.id);
+    assert.equal(data.user.role, 'USER');
+    secrets.push(data.token);
+    return data;
+  });
+  if (qaDriver) {
+    await check('New driver can log in and read its own identity', async () => {
+      const signedIn = await login(qaEmail, qaPassword);
+      assert.equal(signedIn.user.id, qaDriver.user.id);
+      const data = await request('/api/auth/me', { token: signedIn.token });
+      assert.equal(data.user?.id, qaDriver.user.id);
+      assert.equal(data.user?.role, 'USER');
+    });
+    await check('New synthetic account has no preexisting bookings', async () => {
+      const data = await request('/api/bookings/mine', { token: qaDriver.token });
+      assert.deepEqual(data.bookings, []);
+    });
+  }
   await check('Unauthenticated rental creation is forbidden', () => request('/api/rentals', { body: {}, status: 401 }));
   await check('Unauthenticated AI access is forbidden', () => request('/api/ai/listing-draft', { body: { notes: 'Synthetic test' }, status: 401 }));
 
@@ -165,7 +190,10 @@ async function main() {
         name: run, address: 'Synthetic QA fixture, Kochi - no real charger or payment', lat: 9.9816, lng: 76.2999,
         hourlyRatePaise: 12500, published: true, connectorType: 'Type 2', currentType: 'AC', powerKw: 7.4,
         parking: 'Synthetic QA parking bay.', accessInstructions: 'Synthetic public QA instructions.', restrictedAccessInstructions: 'SYNTHETIC-QA-RESTRICTED',
-        terms: 'Synthetic verification only; no money collected.', availabilityWindows: [{ startsAt: start.toISOString(), endsAt: end.toISOString() }],
+        terms: 'Synthetic verification only; no money collected.', availabilityWindows: [
+          { startsAt: new Date(Date.now() - 60000).toISOString(), endsAt: new Date(Date.now() + 4 * 3600000).toISOString() },
+          { startsAt: start.toISOString(), endsAt: end.toISOString() },
+        ],
       } });
       assert.ok(data.rental?.id);
       return data.rental;
@@ -174,6 +202,12 @@ async function main() {
       const data = await request('/api/vehicles', { token: driver.token, status: 201, body: { model: run, vehicleType: 'CAR', connectorTypes: ['Type 2'], batteryCapacityKwh: 30, rangeKm: 200 } });
       assert.ok(data.vehicle?.id);
       return data.vehicle;
+    });
+    if (vehicle) await check('Garage persists the saved vehicle under its owner', async () => {
+      const own = await request('/api/vehicles', { token: driver.token });
+      assert.ok(own.vehicles?.some(item => item.id === vehicle.id && item.model === run));
+      const another = await request('/api/vehicles', { token: host.token });
+      assert.ok(!another.vehicles?.some(item => item.id === vehicle.id));
     });
     if (listing) {
       await check('Public listing hides restricted access instructions', async () => {
@@ -245,8 +279,13 @@ async function main() {
       }
     } else skip('Booking quote, request, acceptance, conflict and cancellation', 'Synthetic listing or vehicle creation failed.');
 
+    // Prepare this separate session before model calls; their runtime usually
+    // covers the short wait until its server-defined reservation starts.
+    if (listing && vehicle) await prepareSession();
+    else skip('Actual session start, completion, receipt and outcome', 'Synthetic listing or vehicle creation failed.');
     if (flags.has('--skip-ai')) skip('Live text, vision, multilingual guide, host insights and neural audio', 'Explicit --skip-ai option.');
     else await verifyAI();
+    if (sessionBooking) await completeSession();
   } else skip('Authenticated rental, AI and WebSocket journeys', 'Demo host or driver login failed.');
 
   if (process.env.EDITH_ADMIN_EMAIL && process.env.EDITH_ADMIN_PASSWORD) {
@@ -311,6 +350,40 @@ async function verifyAI() {
     assert.ok(!data.booking && !data.draft, 'An incomplete request must not create a booking or quote.');
     secrets.push(data.stateToken);
   });
+  if (qaDriver) {
+    const autopilot = await check('One-turn demo autopilot creates an actual confirmed simulation', async () => {
+      const data = await request('/api/concierge/agent/turn', { token: qaDriver.token, timeout: 120000, body: { message: 'Book me a charger slot for my Tata Nexon EV.', settings: { mvpQuickBook: true, demoVehicleId: 'nexon-45' } } });
+      assert.ok(data.booking?.id);
+      assert.equal(data.booking.userId, qaDriver.user.id, 'Only this newly created QA account may own the simulation.');
+      autopilotBookings.push(data.booking.id);
+      if (data.stateToken) secrets.push(data.stateToken);
+      assert.equal(data.booking.status, 'CONFIRMED');
+      assert.equal(data.instantDemo, true);
+      assert.equal(data.booking.station?.source, 'PUBLIC_DEMO');
+      assert.equal(data.booking.quoteSnapshot?.bookingMode, 'DEMO_AUTOPILOT');
+      assert.equal(data.booking.quoteSnapshot?.publicSimulation, true);
+      assert.equal(data.booking.paymentState, 'DEMO_NO_MONEY_COLLECTED');
+      assert.equal(data.vehicleLookup?.realVehicleVerified, false);
+      assert.match(data.message || '', /simulation|demo/i);
+      report.fixtures.manufacturerReference = data.vehicleLookup?.reference?.status || 'UNKNOWN';
+      return data;
+    });
+    if (autopilot) {
+      await check('Autopilot booking and demo preset persist in new driver account', async () => {
+        const saved = await request(`/api/bookings/${autopilot.booking.id}`, { token: qaDriver.token });
+        assert.equal(saved.booking?.status, 'CONFIRMED');
+        const garage = await request('/api/vehicles', { token: qaDriver.token });
+        assert.ok(garage.vehicles?.some(item => item.id === saved.booking.vehicleId && item.metadata?.synthetic === true));
+        report.fixtures.newAccountVehicleCount = garage.vehicles.length;
+        const status = await request('/api/concierge/agent/turn', { token: qaDriver.token, body: { message: 'booking status', stateToken: autopilot.stateToken } });
+        assert.equal(status.booking?.id, autopilot.booking.id);
+      });
+      await check('QA driver cancels only its newly created autopilot simulation', async () => {
+        const data = await request(`/api/bookings/${autopilot.booking.id}/action`, { token: qaDriver.token, body: { action: 'cancel' } });
+        assert.equal(data.booking?.status, 'CANCELLED');
+      });
+    }
+  } else skip('One-turn demo autopilot creation and persistence', 'New synthetic account signup failed; existing user bookings are never reused.');
   await check('Labelled offline AI fallback remains usable', async () => {
     const data = await request('/api/ai/guide', { token: driver.token, body: { question: 'How does host acceptance work?', language: 'en', useDemoFallback: true } });
     assert.equal(data.mode, 'DEMO_FALLBACK');
@@ -328,22 +401,110 @@ async function verifyAI() {
   });
 }
 
+async function prepareSession() {
+  sessionBooking = await check('Separate QA session is quoted, requested and host-confirmed', async () => {
+    const health = await request('/health');
+    const serverNow = Date.parse(health.timestamp);
+    assert.ok(Number.isFinite(serverNow), 'Server health must provide its current timestamp.');
+    const selection = { stationId: listing.id, vehicleId: vehicle.id, slotStart: new Date(serverNow + 90000).toISOString(), durationMinutes: 30 };
+    const quoted = await request('/api/bookings/quote', { token: driver.token, body: selection });
+    const requested = await request('/api/bookings/request', { token: driver.token, status: 201, body: { ...selection, expectedTotalPaise: quoted.quote.totalPaise, expectedHourlyRatePaise: quoted.quote.hourlyRatePaise, idempotencyKey: randomUUID() } });
+    assert.ok(requested.booking?.id);
+    bookings.push(requested.booking.id);
+    const accepted = await request(`/api/bookings/${requested.booking.id}/action`, { token: host.token, body: { action: 'accept', reason: 'Separate synthetic QA check-in and receipt verification.' } });
+    assert.equal(accepted.booking?.status, 'CONFIRMED');
+    return accepted.booking;
+  });
+}
+
+async function completeSession() {
+  const inWindow = await check('Session reaches its real reserved interval using server time', async () => {
+    const deadline = Date.now() + 125000;
+    let announced = false;
+    while (true) {
+      const health = await request('/health');
+      const serverNow = Date.parse(health.timestamp);
+      assert.ok(Number.isFinite(serverNow));
+      const wait = Date.parse(sessionBooking.slotStart) - serverNow;
+      assert.ok(serverNow < Date.parse(sessionBooking.slotEnd), 'The reserved QA interval ended before check-in.');
+      if (wait <= 0) return true;
+      assert.ok(Date.now() < deadline, 'Server time did not reach the QA interval within the bounded wait.');
+      if (!announced) { console.log(`Waiting approximately ${Math.ceil(wait / 1000)} seconds for the QA reservation window.`); announced = true; }
+      await new Promise(resolve => setTimeout(resolve, Math.min(wait + 250, 25000)));
+    }
+  });
+  if (!inWindow) { skip('Session start, completion, receipt and outcome', 'The server-defined reservation window was not reached.'); return; }
+  await check('Driver cannot perform host check-in', () => request(`/api/bookings/${sessionBooking.id}/action`, { token: driver.token, body: { action: 'start' }, status: 403 }));
+  const started = await check('Host starts the confirmed session within its reserved interval', async () => {
+    const data = await request(`/api/bookings/${sessionBooking.id}/action`, { token: host.token, body: { action: 'start' } });
+    assert.equal(data.booking?.status, 'IN_PROGRESS');
+    assert.ok(data.booking.sessionStartedAt);
+    return data.booking;
+  });
+  if (!started) { skip('Session completion, receipt and outcome', 'Host check-in failed.'); return; }
+  const completed = await check('Host completes the session and produces a demo receipt', async () => {
+    const data = await request(`/api/bookings/${sessionBooking.id}/action`, { token: host.token, body: { action: 'complete' } });
+    assert.equal(data.booking?.status, 'COMPLETED');
+    completedBookings.add(data.booking.id);
+    assert.equal(data.booking.receipt?.amountPaise, 6250);
+    assert.equal(data.booking.receipt?.currency, 'INR');
+    assert.match(data.booking.receipt?.paymentLabel || '', /no money collected/i);
+    assert.ok(data.booking.receipt?.sessionStartedAt && data.booking.receipt?.sessionCompletedAt);
+    assert.equal(data.booking.receipt.measuredEnergyKwh, null, 'Synthetic sessions must not invent measured energy.');
+    return data.booking;
+  });
+  if (!completed) { skip('Persisted receipt and successful session outcome', 'Host completion failed.'); return; }
+  await check('Completed receipt persists in driver and host booking history', async () => {
+    const own = await request('/api/bookings/mine', { token: driver.token });
+    assert.ok(own.bookings?.some(item => item.id === completed.id && item.status === 'COMPLETED' && item.receipt?.amountPaise === 6250));
+    const hosted = await request('/api/bookings/host', { token: host.token });
+    assert.ok(hosted.bookings?.some(item => item.id === completed.id && item.status === 'COMPLETED'));
+  });
+  await check('Host cannot submit a driver outcome report', () => request(`/api/bookings/${completed.id}/report`, { token: host.token, status: 403, body: { kind: 'SESSION_SUCCESS', notes: 'Synthetic QA report access-control check.' } }));
+  await check('Driver records and retrieves a synthetic successful session outcome', async () => {
+    const data = await request(`/api/bookings/${completed.id}/report`, { token: driver.token, status: 201, body: { kind: 'SESSION_SUCCESS', notes: 'Synthetic QA outcome only. No physical charging or measured energy was verified.' } });
+    assert.ok(data.report?.id);
+    assert.equal(data.report.kind, 'SESSION_SUCCESS');
+    const saved = await request(`/api/bookings/${completed.id}`, { token: driver.token });
+    assert.ok(saved.booking?.reports?.some(item => item.id === data.report.id && item.kind === 'SESSION_SUCCESS'));
+  });
+}
+
 async function cleanup() {
   socket?.disconnect();
   if (driver) {
-    for (const id of bookings) await check('QA cleanup: cancel own booking fixture', async () => {
+    for (const id of bookings) {
+      if (completedBookings.has(id)) continue;
+      await check('QA cleanup: close only own unfinished booking fixture', async () => {
+      const current = await request(`/api/bookings/${id}`, { token: driver.token });
+      if (current.booking?.status === 'COMPLETED') { completedBookings.add(id); return; }
+      if (current.booking?.status === 'IN_PROGRESS' || (current.booking?.status === 'CONFIRMED' && Date.parse(current.booking.slotStart) <= Date.now())) {
+        if (current.booking.status === 'CONFIRMED') await request(`/api/bookings/${id}/action`, { token: host.token, body: { action: 'start' } });
+        const closed = await request(`/api/bookings/${id}/action`, { token: host.token, body: { action: 'complete' } });
+        assert.equal(closed.booking?.status, 'COMPLETED');
+        completedBookings.add(id);
+        return;
+      }
       const data = await request(`/api/bookings/${id}/action`, { token: driver.token, body: { action: 'cancel' } });
       assert.equal(data.booking?.status, 'CANCELLED');
     });
+    }
   }
+  if (qaDriver) for (const id of autopilotBookings) await check('QA cleanup: cancel only new-account autopilot fixture', async () => {
+    const data = await request(`/api/bookings/${id}/action`, { token: qaDriver.token, body: { action: 'cancel' } });
+    assert.equal(data.booking?.status, 'CANCELLED');
+  });
   if (host && listing) await check('QA cleanup: pause only the created listing', async () => {
     const data = await request(`/api/rentals/${listing.id}`, { token: host.token, method: 'PATCH', body: { published: false } });
     assert.equal(data.rental?.published, false);
   });
   report.fixtures.createdListings = listing ? 1 : 0;
-  report.fixtures.createdVehicles = vehicle ? 1 : 0;
-  report.fixtures.createdBookings = bookings.length;
-  report.fixtures.retained = 'Named synthetic QA records remain for audit; created listing is paused and bookings are cancelled when cleanup passes.';
+  report.fixtures.createdVehicles = (vehicle ? 1 : 0) + (report.fixtures.newAccountVehicleCount || 0);
+  report.fixtures.createdAccounts = qaDriver ? 1 : 0;
+  report.fixtures.createdBookings = bookings.length + autopilotBookings.length;
+  report.fixtures.createdAutopilotBookings = autopilotBookings.length;
+  report.fixtures.completedSessions = completedBookings.size;
+  report.fixtures.retained = 'Named synthetic QA account, vehicle, report and booking records remain for audit. Created private listing is paused; created bookings are cancelled or completed when cleanup passes. No preexisting user booking is altered.';
 }
 
 (async () => {
@@ -356,7 +517,8 @@ async function cleanup() {
     report.passed = report.summary.failed === 0;
     report.allChecksRun = report.summary.skipped === 0;
     fs.mkdirSync(path.resolve(__dirname, '../test-results'), { recursive: true });
-    const artifact = path.resolve(__dirname, '../test-results/deployment-verification.json');
+    const artifact = process.env.EDITH_VERIFICATION_REPORT ? path.resolve(process.env.EDITH_VERIFICATION_REPORT) : path.resolve(__dirname, '../test-results/deployment-verification.json');
+    fs.mkdirSync(path.dirname(artifact), { recursive: true });
     fs.writeFileSync(artifact, JSON.stringify(report, null, 2));
     console.log(JSON.stringify({ checksPassed: report.summary.passed, checksFailed: report.summary.failed, checksSkipped: report.summary.skipped, passed: report.passed, allChecksRun: report.allChecksRun, artifact }, null, 2));
     if (!report.passed) process.exitCode = 1;

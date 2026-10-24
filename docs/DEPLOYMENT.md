@@ -18,10 +18,13 @@ origin by default. `NEXT_PUBLIC_API_URL` remains an optional separate API overri
   hackathon simulation. No real payments or operator reservations are made.
 - `NEXT_PUBLIC_REALTIME_ENABLED=true` and
   `VERCEL_SUPPORT_LARGE_FUNCTIONS=1` for the native WebSocket and Kokoro runtime.
+- `ONNXRUNTIME_NODE_INSTALL_CUDA=skip`; speech uses CPU inference.
 - Leave `NEXT_PUBLIC_API_URL` unset for the shared-domain deployment.
 
 The backend function has 2 GB memory and a 300-second maximum duration. Kokoro
 downloads its model into writable temporary storage on its first speech request.
+The function bundle explicitly includes the English voice and Linux ONNX native
+libraries. Functions run in Singapore alongside the managed database.
 WebSockets reconnect when an invocation closes; database polling also refreshes
 booking state. In-memory rooms do not coordinate separate function instances.
 

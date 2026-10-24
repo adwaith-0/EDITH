@@ -1,5 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "regions": ["sin1"],
   "services": {
     "frontend": {
       "root": ".",
@@ -15,7 +16,7 @@
         "server/index.js": {
           "maxDuration": 300,
           "memory": 2048,
-          "includeFiles": "server/data/**"
+          "includeFiles": "{server/data/**,node_modules/kokoro-js/voices/af_heart.bin,node_modules/onnxruntime-node/bin/napi-v3/linux/x64/*.{node,so,so.*}}"
         }
       }
     }

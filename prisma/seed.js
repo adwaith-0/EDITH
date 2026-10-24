@@ -37,13 +37,15 @@ async function main() {
     const station = await prisma.station.upsert({ where: { id: fixture.id }, update: {}, create: { ...stationData, ownerId: host.id, kind: 'PRIVATE_RENTAL', source: 'SYNTHETIC_DEMO', terms: 'Synthetic hackathon listing. Hourly access only. Reserved duration is billed. No actual payment or energy measurement.', connectors: { create: { id: `${fixture.id}-connector`, connectorType, powerKw, currentType, slotCount: 1 } } } });
     // Append missing dated demo windows only; preserve user changes and existing reservations.
     // Do not republish paused fixtures or reset rates on repeated seed runs.
+    const windows = [];
     for (let day = 0; day < 30; day++) {
       const startsAt = new Date(base.getTime() + day * 86400000);
       const endsAt = new Date(startsAt.getTime() + (mode === 'closed' ? 4 : 24) * 3600000);
       const id = `${fixture.id}-window-${startsAt.toISOString().slice(0, 10)}`;
       // Full-day adjacent windows are merged for the compatible fixture below by service.
-      await prisma.availabilityWindow.upsert({ where: { id }, update: {}, create: { id, stationId: station.id, startsAt, endsAt } });
+      windows.push({ id, stationId: station.id, startsAt, endsAt });
     }
+    await prisma.availabilityWindow.createMany({ data: windows, skipDuplicates: true });
   }
   const publicFixtures = [
     { id: 'demo-public-marine-drive', name: 'Marine Drive public discovery · synthetic', address: 'Synthetic public discovery fixture · Marine Drive, Kochi', lat: 9.9825, lng: 76.2746 },
