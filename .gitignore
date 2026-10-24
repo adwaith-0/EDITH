@@ -45,3 +45,6 @@ next-env.d.ts
 # Persistent development database and browser QA artifacts
 .local/
 test-results/
+.vercel/
+.env*
+!.env.local.example

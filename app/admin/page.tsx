@@ -3,7 +3,8 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { io, Socket } from 'socket.io-client';
+import { io } from 'socket.io-client';
+import { API_BASE_URL, REALTIME_ENABLED } from '@/services/apiBase';
 
 interface DashboardData {
     activeBookingsCount: number;
@@ -34,12 +35,12 @@ export default function AdminDashboardPage() {
     const [error, setError] = useState('');
     const [dashboard, setDashboard] = useState<DashboardData | null>(null);
     const [bookings, setBookings] = useState<Booking[]>([]);
-    const [socket, setSocket] = useState<Socket | null>(null);
+    const [realtimeConnected, setRealtimeConnected] = useState(false);
     const [user, setUser] = useState<any>(null);
 
     const fetchDashboard = useCallback(async (token: string) => {
         try {
-            const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'}/api/admin/dashboard`, {
+            const res = await fetch(`${API_BASE_URL}/api/admin/dashboard`, {
                 headers: { Authorization: `Bearer ${token}` },
             });
             if (!res.ok) throw new Error('Failed to fetch dashboard');
@@ -52,7 +53,7 @@ export default function AdminDashboardPage() {
 
     const fetchBookings = useCallback(async (token: string) => {
         try {
-            const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'}/api/admin/current-bookings`, {
+            const res = await fetch(`${API_BASE_URL}/api/admin/current-bookings`, {
                 headers: { Authorization: `Bearer ${token}` },
             });
             if (!res.ok) throw new Error('Failed to fetch bookings');
@@ -85,32 +86,38 @@ export default function AdminDashboardPage() {
         });
 
         // Setup socket connection
-        const newSocket = io(process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001', {
+        const newSocket = REALTIME_ENABLED ? io(API_BASE_URL || undefined, {
             auth: { token },
-        });
+            transports: ['websocket'],
+            reconnection: true,
+            reconnectionDelay: 1000,
+            reconnectionDelayMax: 30000,
+            timeout: 20000,
+        }) : null;
 
-        newSocket.on('connect', () => {
-            console.log('Admin socket connected');
-        });
-
-        newSocket.on('booking.created', (booking) => {
-            console.log('New booking:', booking);
-            setBookings((prev) => [booking, ...prev]);
-            fetchDashboard(token);
-        });
-
-        newSocket.on('booking.cancelled', (data) => {
-            console.log('Booking cancelled:', data);
-            setBookings((prev) => prev.filter((b) => b.id !== data.booking.id));
-            fetchDashboard(token);
-        });
-
-        newSocket.on('booking.updated', () => {
+        newSocket?.on('connect', () => {
+            setRealtimeConnected(true);
             fetchDashboard(token);
             fetchBookings(token);
         });
 
-        setSocket(newSocket);
+        newSocket?.on('disconnect', () => setRealtimeConnected(false));
+        newSocket?.on('connect_error', () => setRealtimeConnected(false));
+
+        newSocket?.on('booking.created', () => {
+            fetchDashboard(token);
+            fetchBookings(token);
+        });
+
+        newSocket?.on('booking.cancelled', () => {
+            fetchDashboard(token);
+            fetchBookings(token);
+        });
+
+        newSocket?.on('booking.updated', () => {
+            fetchDashboard(token);
+            fetchBookings(token);
+        });
 
         // Refresh data every 30 seconds
         const interval = setInterval(() => {
@@ -119,7 +126,7 @@ export default function AdminDashboardPage() {
         }, 30000);
 
         return () => {
-            newSocket.disconnect();
+            newSocket?.disconnect();
             clearInterval(interval);
         };
     }, [router, fetchDashboard, fetchBookings]);
@@ -135,7 +142,7 @@ export default function AdminDashboardPage() {
         if (!token) return;
 
         try {
-            const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'}/api/admin/booking/force-cancel`, {
+            const res = await fetch(`${API_BASE_URL}/api/admin/booking/force-cancel`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -265,10 +272,10 @@ export default function AdminDashboardPage() {
                     </div>
                     <div className="bg-white rounded-2xl border border-gray-100 p-6 shadow-sm flex items-center justify-between">
                         <div>
-                            <h3 className="text-gray-500 text-xs font-bold uppercase tracking-wider mb-2">Socket Status</h3>
+                            <h3 className="text-gray-500 text-xs font-bold uppercase tracking-wider mb-2">Booking updates</h3>
                             <p className="text-lg font-bold text-black flex items-center gap-2">
-                                <span className={`w-2.5 h-2.5 rounded-full ${socket?.connected ? 'bg-green-500' : 'bg-red-500'}`}></span>
-                                {socket?.connected ? 'Connected' : 'Disconnected'}
+                                <span className={`w-2.5 h-2.5 rounded-full ${realtimeConnected ? 'bg-green-500' : 'bg-amber-500'}`}></span>
+                                {realtimeConnected ? 'Live updates' : 'Refreshes every 30s'}
                             </p>
                         </div>
                     </div>

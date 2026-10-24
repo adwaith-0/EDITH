@@ -1,9 +1,9 @@
 import { LatLng } from '@/types/map';
 import { RouteInfo, RouteLeg } from '@/types/route';
+import { API_BASE_URL as api } from './apiBase';
 
 export interface MapPlace extends LatLng { label: string }
 export interface OpenRouteOptions { waypoints?: (LatLng | string)[]; departureAt?: string }
-const api = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 async function mapFetch(path: string, body?: unknown) {
   const response = await fetch(`${api}/api/maps${path}`, body ? {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),

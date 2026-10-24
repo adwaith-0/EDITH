@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { API_BASE_URL } from '@/services/apiBase';
 
 interface AuthModalProps {
     isOpen: boolean;
@@ -32,7 +33,7 @@ export default function AuthModal({ isOpen, onClose }: AuthModalProps) {
             : { email, password, name };
 
         try {
-            const res = await fetch(`http://localhost:3001${endpoint}`, {
+            const res = await fetch(`${API_BASE_URL}${endpoint}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(body),

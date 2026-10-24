@@ -1,17 +1,25 @@
-// Development-only, deterministic, non-destructive synthetic fixtures.
+// Opt-in, deterministic, non-destructive synthetic demo fixtures.
 require('dotenv').config({ path: '.env.local' });
 require('dotenv').config({ path: '.env' });
 const prisma = require('../server/lib/prisma');
 const bcrypt = require('bcrypt');
 
 async function main() {
-  if (process.env.NODE_ENV === 'production') throw new Error('Demo seeding is disabled in production.');
+  const cloudSeed = process.env.NODE_ENV === 'production' || Boolean(process.env.VERCEL);
+  if (cloudSeed && (process.env.DEMO_MODE !== 'true' || process.env.ALLOW_DEMO_SEED !== 'true')) {
+    throw new Error('Cloud demo seeding requires DEMO_MODE=true and ALLOW_DEMO_SEED=true.');
+  }
+  const adminEmail = process.env.ADMIN_EMAIL?.trim() || 'admin@evcharge.com';
+  const adminPassword = process.env.ADMIN_PASSWORD || 'Admin@123';
+  if (cloudSeed && (!process.env.ADMIN_EMAIL || !process.env.ADMIN_PASSWORD || adminEmail === 'admin@evcharge.com' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adminEmail) || adminPassword.length < 16 || /^(Admin@123|EdithDemo123!)$/i.test(adminPassword))) {
+    throw new Error('Cloud demo seeding requires a private ADMIN_EMAIL and an ADMIN_PASSWORD of at least 16 characters.');
+  }
   const demoHash = await bcrypt.hash('EdithDemo123!', 10);
-  const adminHash = await bcrypt.hash('Admin@123', 10);
+  const adminHash = await bcrypt.hash(adminPassword, 10);
   const account = (email, name, passwordHash, role = 'USER') => prisma.user.upsert({ where: { email }, update: {}, create: { email, name, passwordHash, role } });
   const driver = await account('driver@edith.demo', 'Arjun · Demo Driver', demoHash);
   const host = await account('host@edith.demo', 'Meera · Demo Host', demoHash);
-  await account('admin@evcharge.com', 'EDITH Demo Administrator', adminHash, 'ADMIN');
+  await account(adminEmail, 'EDITH Demo Administrator', adminHash, 'ADMIN');
   await prisma.vehicle.upsert({ where: { id: 'demo-driver-nexon' }, update: {}, create: { id: 'demo-driver-nexon', ownerId: driver.id, model: 'Tata Nexon EV · synthetic demo vehicle', vehicleType: 'CAR', connectorTypes: ['Type 2', 'CCS2'], batteryCapacityKwh: 40.5, rangeKm: 280, metadata: { synthetic: true, specifications: 'Demo inputs, not a verified production vehicle catalogue.' } } });
   const demoCars=require('../server/services/demoVehicleCatalogue');
   for(const preset of demoCars.catalogue)await demoCars.vehicleFor(driver.id,preset);
@@ -44,7 +52,9 @@ async function main() {
   for (const data of publicFixtures) await prisma.station.upsert({ where: { id: data.id }, update: {}, create: { ...data, kind: 'PUBLIC', source: 'SYNTHETIC_DEMO', published: false } });
   console.log('Synthetic Kochi fixtures seeded without deleting or resetting existing records.');
   console.log('Driver: driver@edith.demo | Host: host@edith.demo | Password: EdithDemo123!');
-  console.log('Administrator: admin@evcharge.com | Password: Admin@123 (development only)');
+  if (cloudSeed) console.log('Private administrator account configured from deployment environment.');
+  else if (!process.env.ADMIN_EMAIL && !process.env.ADMIN_PASSWORD) console.log('Administrator: admin@evcharge.com | Password: Admin@123 (development only)');
+  else console.log('Administrator account configured from environment.');
 }
 
 main().catch(error => { console.error(error); process.exitCode = 1; }).finally(() => prisma.$disconnect());

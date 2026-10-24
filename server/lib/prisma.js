@@ -13,6 +13,11 @@ const { PrismaClient } = require('@prisma/client');
 // Create connection pool
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
+    // Each cloud instance has its own pool. Keep it small and use the managed
+    // provider's pooled connection URL instead of exhausting database clients.
+    max: process.env.VERCEL ? 2 : 10,
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 10000,
 });
 
 // Create Prisma adapter

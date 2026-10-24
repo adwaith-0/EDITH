@@ -1,6 +1,6 @@
 'use client';
 import {useCallback,useEffect,useRef,useState} from 'react';
-const API=process.env.NEXT_PUBLIC_API_URL||'http://localhost:3001';
+import {API_BASE_URL as API} from '@/services/apiBase';
 export function useNeuralSpeech(){
   const audioRef=useRef<HTMLAudioElement>(null),request=useRef<AbortController|null>(null),objectUrl=useRef('');
   const [loading,setLoading]=useState(false),[url,setUrl]=useState(''),[notice,setNotice]=useState('');

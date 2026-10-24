@@ -4,6 +4,8 @@ Private EV-charger access rentals with explicit host approval. This extends the 
 
 ## Run locally
 
+For hosted setup and the live feature checker, see [Vercel deployment](docs/DEPLOYMENT.md).
+
 Node.js 22.12+ (Node 24 recommended) and npm are required. PostgreSQL is required for persistence. Google Maps and AI keys are not required for rentals.
 
 1. `npm ci`

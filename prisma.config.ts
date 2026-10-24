@@ -12,6 +12,8 @@ export default defineConfig({
     seed: "node prisma/seed.js",
   },
   datasource: {
-    url: process.env["DATABASE_URL"],
+    // Migrations use a direct database connection when the provider supplies it.
+    // The application continues to use DATABASE_URL's pooled connection.
+    url: process.env["DATABASE_URL_UNPOOLED"] || process.env["DATABASE_URL"],
   },
 });

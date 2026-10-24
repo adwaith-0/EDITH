@@ -3,16 +3,30 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const { createRequire } = require('node:module');
 const ts = require('typescript');
 
 function loadTypeScript(relativePath, imports = {}, globals = {}) {
-    const filename = path.resolve(__dirname, '../..', relativePath);
+    const projectRoot = path.resolve(__dirname, '../..');
+    const filename = path.resolve(projectRoot, relativePath);
+    const requireFromFile = createRequire(filename);
     const compiled = ts.transpileModule(fs.readFileSync(filename, 'utf8'), {
         compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
     }).outputText;
     const module = { exports: {} };
+    function resolveImport(name) {
+        if (Object.hasOwn(imports, name)) return imports[name];
+        const localPath = name.startsWith('@/') ? path.resolve(projectRoot, name.slice(2))
+            : name.startsWith('.') ? path.resolve(path.dirname(filename), name) : null;
+        if (localPath) {
+            const source = [localPath, `${localPath}.ts`, `${localPath}.tsx`]
+                .find(candidate => /\.tsx?$/.test(candidate) && fs.existsSync(candidate));
+            if (source) return loadTypeScript(path.relative(projectRoot, source), imports, globals);
+        }
+        return requireFromFile(name);
+    }
     vm.runInNewContext(compiled, { module, exports: module.exports, console,
-        require: name => Object.hasOwn(imports, name) ? imports[name] : require(name), ...globals }, { filename });
+        require: resolveImport, ...globals }, { filename });
     return module.exports;
 }
 

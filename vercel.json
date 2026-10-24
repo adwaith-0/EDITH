@@ -1,0 +1,29 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "services": {
+    "frontend": {
+      "root": ".",
+      "framework": "nextjs",
+      "buildCommand": "npm run build"
+    },
+    "backend": {
+      "root": ".",
+      "framework": "express",
+      "entrypoint": "server/index.js",
+      "buildCommand": "npm run db:generate",
+      "functions": {
+        "server/index.js": {
+          "maxDuration": 300,
+          "memory": 2048,
+          "includeFiles": "server/data/**"
+        }
+      }
+    }
+  },
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": { "service": "backend" } },
+    { "source": "/health", "destination": { "service": "backend" } },
+    { "source": "/socket.io/(.*)", "destination": { "service": "backend" } },
+    { "source": "/(.*)", "destination": { "service": "frontend" } }
+  ]
+}

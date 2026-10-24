@@ -1,6 +1,6 @@
 import { HostSummary, RentalAvailability, RentalBooking, RentalDraft, RentalListing, RentalQuote, RentalSearch, RentalUser, RentalVehicle } from '@/types/rental';
+import { API_BASE_URL as API_URL } from './apiBase';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 export class RentalApiError extends Error {
   constructor(message:string,public status:number,public code?:string){super(message);this.name='RentalApiError';}
 }

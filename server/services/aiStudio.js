@@ -57,11 +57,17 @@ async function inspectImage(base64) {
 }
 const UNCERTAIN_FACT = /\b(?:not|no|unknown|unsure|maybe|uncertain|unconfirmed|unverified|cannot|can['’]t|don['’]t)\b/i;
 const folded = value => value.trim().toLowerCase().replace(/\s+/g, ' ');
+function hasNegativeFact(value, field) {
+  // OCR may place a model such as DEMO-74 on the same line as a positive
+  // rating. Only a signed measurement/rate can negate these numeric facts.
+  if (field === 'powerKw') return /[-−]\s*\d+(?:\.\d+)?\s*k[wW]\b/i.test(value);
+  return /(?:₹|INR\s*|Rs\.?\s*)[-−]\s*\d|[-−]\s*\d+(?:\.\d+)?\s*(?:per\s+(?:hour|hr)|\/\s*(?:hour|hr|h))\b|(?:rate|price|hourly)\s*[:=]?\s*[-−]\s*\d/i.test(value);
+}
 function supportedEvidence(source, evidence, field) {
-  return source.split(/[\r\n]+|(?<=[.!?])\s+/).some(line => folded(line).includes(folded(evidence)) && !UNCERTAIN_FACT.test(line) && (!['powerKw', 'hourlyRatePaise'].includes(field) || !/[-−]\s*\d/.test(line)));
+  return source.split(/[\r\n]+|(?<=[.!?])\s+/).some(line => folded(line).includes(folded(evidence)) && !UNCERTAIN_FACT.test(line) && (!['powerKw', 'hourlyRatePaise'].includes(field) || !hasNegativeFact(line, field)));
 }
 function hasExplicitNumber(evidence, number, field) {
-  if (UNCERTAIN_FACT.test(evidence) || /[-−]\s*\d/.test(evidence)) return false;
+  if (UNCERTAIN_FACT.test(evidence) || hasNegativeFact(evidence, field)) return false;
   if (field === 'powerKw') return [...evidence.matchAll(/(?:^|[^\d.+-])(\d+(?:\.\d+)?)\s*k[wW]\b/gi)].some(match => Number(match[1]) === number);
   return [...evidence.matchAll(/(?:₹|INR\s*|Rs\.?\s*)(\d+(?:\.\d+)?)|(?:rate|price|hourly)\s*[:=]?\s*(\d+(?:\.\d+)?)/gi)]
     .some(match => Math.round(Number(match[1] || match[2]) * 100) === number) && /(?:hour|hr|\/h\b)/i.test(evidence);

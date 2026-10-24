@@ -16,14 +16,22 @@ const adminRoutes = require('./routes/admin');
 
 const app = express();
 const httpServer = http.createServer(app);
+const isVercel = Boolean(process.env.VERCEL);
+
+// Vercel terminates the public connection before forwarding it to this server.
+if (isVercel) app.set('trust proxy', 1);
 
 // CORS Configuration
 const allowedOrigins = ['http://localhost:3000', 'http://localhost:3003', 'http://localhost:3002'];
 if (process.env.FRONTEND_URL) {
-    allowedOrigins.push(process.env.FRONTEND_URL);
+    allowedOrigins.push(process.env.FRONTEND_URL.replace(/\/$/, ''));
+}
+for (const hostname of [process.env.VERCEL_URL, process.env.VERCEL_PROJECT_PRODUCTION_URL]) {
+    if (hostname) allowedOrigins.push(`https://${hostname}`);
 }
 
 const io = new Server(httpServer, {
+    ...(isVercel ? { transports: ['websocket'] } : {}),
     cors: {
         origin: allowedOrigins,
         methods: ['GET', 'POST', 'PUT', 'DELETE'],
@@ -64,8 +72,14 @@ app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
 
 // Health check
-app.get('/health', (req, res) => {
-    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+app.get('/health', async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    try {
+        await require('./lib/prisma').$queryRaw`SELECT 1`;
+        res.json({ status: 'ok', database: 'ready', timestamp: new Date().toISOString() });
+    } catch {
+        res.status(503).json({ status: 'unavailable', database: 'unavailable', timestamp: new Date().toISOString() });
+    }
 });
 
 // WebSocket connection with JWT authentication
@@ -110,20 +124,25 @@ io.on('connection', (socket) => {
     });
 });
 
-// Start server
-const PORT = process.env.PORT || 3001;
-httpServer.listen(PORT, () => {
-    console.log(`🚀 Backend server running on http://localhost:${PORT}`);
-    console.log(`📡 WebSocket server ready`);
-    // Warm the cached local voice without delaying API readiness or bookings.
-    require('./services/neuralVoice').prepare().catch(()=>console.log('Neural voice warming failed; playback can retry.'));
-});
+// Vercel owns the listener and invocation lifecycle. Export the HTTP server so
+// its WebSocket upgrade handler remains available alongside Express routes.
+module.exports = httpServer;
 
-// Graceful shutdown
-process.on('SIGTERM', () => {
-    console.log('SIGTERM received, closing server...');
-    httpServer.close(() => {
-        console.log('Server closed');
-        process.exit(0);
+if (require.main === module && !isVercel) {
+    const PORT = process.env.PORT || 3001;
+    httpServer.listen(PORT, () => {
+        console.log(`🚀 Backend server running on http://localhost:${PORT}`);
+        console.log(`📡 WebSocket server ready`);
+        // Local startup can warm speech in the background. Cloud speech loads on
+        // demand, inside a request, so work survives the function lifecycle.
+        require('./services/neuralVoice').prepare().catch(() => console.log('Neural voice warming failed; playback can retry.'));
     });
-});
+
+    process.on('SIGTERM', () => {
+        console.log('SIGTERM received, closing server...');
+        httpServer.close(() => {
+            console.log('Server closed');
+            process.exit(0);
+        });
+    });
+}

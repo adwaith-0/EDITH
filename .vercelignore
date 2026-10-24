@@ -1,0 +1,10 @@
+.env*
+!.env.local.example
+.local
+.git
+.next
+node_modules
+test-results
+coverage
+*.log
+*.tsbuildinfo

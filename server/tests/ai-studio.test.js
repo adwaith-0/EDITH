@@ -82,6 +82,19 @@ test('image extraction may supply printed technical fields only, never location 
   assert.throws(() => validateDraft({ draft: { hourlyRatePaise: 12000 }, evidence: { hourlyRatePaise: 'INR 120 per hour' }, labelText: 'INR 120 per hour' }, '', true), { code: 'INVALID_AI_OUTPUT' });
 });
 
+test('a hyphenated model on one OCR line does not negate its positive rating', () => {
+  const extracted = validateDraft({ draft: { powerKw: 7.4, currentType: 'AC', connectorType: 'Type 2' }, evidence: { powerKw: '7.4 kW', currentType: 'AC', connectorType: 'TYPE 2' }, labelText: 'EV CHARGER Connector: TYPE 2 Rated output: 7.4 kW Current: AC Model: DEMO-74' }, '', true);
+  assert.equal(extracted.draft.powerKw, 7.4);
+  const rate = validateDraft({ draft: { hourlyRatePaise: 12000 }, evidence: { hourlyRatePaise: 'INR 120 per hour' }, labelText: null }, 'Model: DEMO-74; Rate: INR 120 per hour');
+  assert.equal(rate.draft.hourlyRatePaise, 12000);
+  for (const source of ['Power: -7.4 kW; Model: DEMO-74', 'Power-7.4 kW', 'Power: −7.4 kW']) {
+    assert.throws(() => validateDraft({ draft: { powerKw: 7.4 }, evidence: { powerKw: '7.4 kW' }, labelText: null }, source), { code: 'INVALID_AI_OUTPUT' });
+  }
+  for (const source of ['Rate: -120 per hour', 'Rate: INR-120 per hour', 'Rate: INR −120 per hour']) {
+    assert.throws(() => validateDraft({ draft: { hourlyRatePaise: 12000 }, evidence: { hourlyRatePaise: '120 per hour' }, labelText: null }, source), { code: 'INVALID_AI_OUTPUT' });
+  }
+});
+
 test('images are bounded, typed and require real configured vision', async () => {
   assert.throws(() => validateImage({ mimeType: 'image/png', base64: Buffer.from('not a PNG').toString('base64') }));
   assert.throws(() => validateImage({ mimeType: 'image/svg+xml', base64: 'AAAA' }));

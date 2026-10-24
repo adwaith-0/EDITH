@@ -1,8 +1,8 @@
 import axios from 'axios';
 import { ChargingStation, ConnectorType } from '@/types/station';
 import { LatLng } from '@/types/map';
+import { API_BASE_URL as API_URL } from './apiBase';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 interface ExternalStation {
     id: string; source: string; name: string; location: LatLng; address: string;
     connectors?: { type: string; powerKW?: number }[];

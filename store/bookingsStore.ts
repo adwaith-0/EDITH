@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { io, Socket } from 'socket.io-client';
 import { Booking, BookingRequest } from '@/types/booking';
+import { API_BASE_URL, REALTIME_ENABLED } from '@/services/apiBase';
 
 interface BookingsState {
     bookings: Booking[];
@@ -25,7 +26,8 @@ interface BookingsState {
     syncActiveBooking: () => Promise<void>;
 }
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+let bookingPollTimer: ReturnType<typeof setInterval> | null = null;
+let bookingSubscription = 0;
 
 export const useBookingsStore = create<BookingsState>((set, get) => ({
     bookings: [],
@@ -36,45 +38,64 @@ export const useBookingsStore = create<BookingsState>((set, get) => ({
     error: null,
 
     initializeSocket: (userId: string) => {
-        const socket = io(API_URL, {
-            query: { userId },
-            transports: ['websocket']
-        });
+        get().disconnectSocket();
+        if (!userId || typeof window === 'undefined') return;
+        const token = localStorage.getItem('userToken');
+        if (!token) return;
+        const subscription = bookingSubscription;
+        const socket = REALTIME_ENABLED ? io(API_BASE_URL || undefined, {
+            auth: { token },
+            transports: ['websocket'],
+            reconnection: true,
+            reconnectionDelay: 1000,
+            reconnectionDelayMax: 30000,
+            timeout: 20000,
+        }) : null;
+        const refreshBookings = async () => {
+            try {
+                const { rentalFetch } = await import('@/services/rentalClient');
+                const { bookings } = await rentalFetch<{ bookings: Booking[] }>('/bookings/mine');
+                if (subscription !== bookingSubscription || get().socket !== socket || localStorage.getItem('userToken') !== token) return;
+                const current = get().activeBooking;
+                const latest = current ? bookings.find(booking => booking.id === current.id) : null;
+                const finished = latest && ['CANCELLED', 'COMPLETED', 'EXPIRED', 'DECLINED'].includes(latest.status);
+                set({ bookings, activeBooking: latest && !finished ? latest : null });
+            } catch {
+                // A temporary realtime or network outage keeps the last saved view.
+            }
+        };
 
-        socket.on('connect', () => {
-            console.log('Socket connected:', socket.id);
+        socket?.on('connect', () => {
             set({ isConnected: true });
+            socket.emit('subscribe:bookings');
+            void refreshBookings();
         });
 
-        socket.on('disconnect', () => {
-            console.log('Socket disconnected');
+        socket?.on('disconnect', () => {
             set({ isConnected: false });
         });
+        socket?.on('connect_error', () => set({ isConnected: false }));
 
-        socket.on('booking.updated', (updatedBooking: Booking) => {
-            const { activeBooking, bookings } = get();
-
-            // Update active booking if matched
-            if (activeBooking && activeBooking.id === updatedBooking.id) {
-                set({ activeBooking: updatedBooking });
-            }
-
-            // Update list
-            const updatedBookings = bookings.map(b =>
-                b.id === updatedBooking.id ? updatedBooking : b
-            );
-            set({ bookings: updatedBookings });
-        });
+        // Events contain only IDs/status; reload complete authenticated records.
+        socket?.on('booking.updated', refreshBookings);
+        socket?.on('booking.created', refreshBookings);
+        socket?.on('booking.cancelled', refreshBookings);
 
         set({ socket });
+        void refreshBookings();
+        bookingPollTimer = setInterval(() => { void refreshBookings(); }, 30000);
     },
 
     disconnectSocket: () => {
+        bookingSubscription++;
+        if (bookingPollTimer) clearInterval(bookingPollTimer);
+        bookingPollTimer = null;
         const { socket } = get();
         if (socket) {
+            socket.removeAllListeners();
             socket.disconnect();
-            set({ socket: null, isConnected: false });
         }
+        set({ socket: null, isConnected: false });
     },
 
     setLoading: (loading) => set({ loading }),

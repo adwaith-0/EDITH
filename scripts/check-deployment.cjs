@@ -1,0 +1,364 @@
+// Exercise a deployed EDITH demo through its public HTTP and WebSocket interfaces.
+// This script never reads dotenv/database credentials and only changes its own QA fixtures.
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const { randomUUID } = require('node:crypto');
+const { io } = require('socket.io-client');
+
+function baseUrl(value, label) {
+  if (!value) throw new Error(`${label} is required.`);
+  const url = new URL(value);
+  assert.ok(['http:', 'https:'].includes(url.protocol), `${label} must use HTTP or HTTPS.`);
+  assert.ok(!url.username && !url.password && !url.search && !url.hash, `${label} must not contain credentials, a query or fragment.`);
+  return url.href.replace(/\/+$/, '');
+}
+
+const web = baseUrl(process.env.EDITH_DEPLOYMENT_URL, 'EDITH_DEPLOYMENT_URL');
+const api = baseUrl(process.env.EDITH_API_URL || web, 'EDITH_API_URL');
+const run = `QA verification ${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID().slice(0, 6)}`;
+const flags = new Set(process.argv.slice(2));
+const allowedFlags = new Set(['--skip-ai', '--skip-realtime', '--skip-maps']);
+for (const flag of flags) assert.ok(allowedFlags.has(flag), `Unknown option: ${flag}`);
+const report = { checkedAt: new Date().toISOString(), deployment: web, api, checks: [], fixtures: { scope: 'Only named synthetic QA listing, saved vehicle and booking records created by this run.' } };
+const secrets = [process.env.EDITH_ADMIN_PASSWORD].filter(Boolean);
+let host, driver, listing, vehicle, socket;
+const bookings = [];
+const updates = new Set();
+
+function safeMessage(error) {
+  let value = error instanceof Error ? error.message : 'Verification failed.';
+  for (const secret of secrets) value = value.split(secret).join('[redacted]');
+  return value.slice(0, 450);
+}
+
+async function check(label, task) {
+  const started = Date.now();
+  try {
+    const value = await task();
+    report.checks.push({ label, result: 'passed', durationMs: Date.now() - started });
+    console.log(`PASS ${label}`);
+    return value;
+  } catch (error) {
+    const message = safeMessage(error);
+    report.checks.push({ label, result: 'failed', durationMs: Date.now() - started, error: message });
+    console.error(`FAIL ${label}: ${message}`);
+    return undefined;
+  }
+}
+
+function skip(label, reason) {
+  report.checks.push({ label, result: 'skipped', reason });
+  console.log(`SKIP ${label}: ${reason}`);
+}
+
+async function request(route, { body, token, method, status = 200, timeout = 65000, binary = false } = {}) {
+  const response = await fetch(api + route, {
+    method: method || (body === undefined ? 'GET' : 'POST'),
+    headers: { ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    signal: AbortSignal.timeout(timeout),
+  });
+  if (response.status !== status) {
+    let code = '';
+    try {
+      const errorBody = await response.json();
+      if (typeof errorBody.code === 'string' && /^[A-Z_0-9]{1,80}$/.test(errorBody.code)) code = ` (${errorBody.code})`;
+    } catch { /* Do not include upstream response payloads or infrastructure HTML. */ }
+    throw new Error(`${method || (body === undefined ? 'GET' : 'POST')} ${route} returned HTTP ${response.status}${code}, expected ${status}.`);
+  }
+  if (binary) return { bytes: Buffer.from(await response.arrayBuffer()), headers: response.headers };
+  assert.match(response.headers.get('content-type') || '', /application\/json/i, `${route} must return JSON.`);
+  return response.json();
+}
+
+async function login(email, password) {
+  const result = await request('/api/auth/login', { body: { email, password } });
+  assert.ok(result.token && result.user?.id, 'Login must return a token and user identity.');
+  secrets.push(result.token);
+  return result;
+}
+
+async function waitForUpdate(id, timeout = 12000) {
+  if (updates.has(id)) return;
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { socket.off('booking.updated', listener); reject(new Error('The authenticated WebSocket did not receive its booking update.')); }, timeout);
+    const listener = update => {
+      if (update.id !== id) return;
+      clearTimeout(timer);
+      socket.off('booking.updated', listener);
+      resolve();
+    };
+    socket.on('booking.updated', listener);
+  });
+}
+
+async function main() {
+  await check('Frontend renders EDITH HTML', async () => {
+    const response = await fetch(web, { signal: AbortSignal.timeout(65000) });
+    assert.equal(response.status, 200, 'The frontend must return HTTP 200.');
+    assert.match(response.headers.get('content-type') || '', /text\/html/i);
+    assert.match(await response.text(), /EDITH/i);
+  });
+  await check('API health and database readiness', async () => {
+    const health = await request('/health');
+    assert.equal(health.status, 'ok');
+    assert.equal(health.database, 'ready', 'Health must verify database connectivity.');
+  });
+  await check('Public station snapshot and coverage disclosure', async () => {
+    const data = await request('/api/external-stations?lat=9.9816&lng=76.2999&radius=100000&preferCache=true');
+    assert.ok(data.stations?.length > 0, 'Kochi must have cached public discovery records.');
+    assert.equal(data.meta?.cached, true);
+    assert.equal(data.meta?.queryComplete, false);
+    assert.match(data.meta?.warning || '', /partial|incomplete/i);
+  });
+  await check('Public vehicle catalogue and demo mode', async () => {
+    const data = await request('/api/concierge/vehicles');
+    assert.ok(data.vehicles?.length > 0);
+    assert.equal(data.demoEnabled, true);
+  });
+
+  if (flags.has('--skip-maps')) skip('Live geocoder, road route and trip directory', 'Explicit --skip-maps option.');
+  else {
+    await check('Live place search', async () => {
+      const data = await request('/api/maps/search?q=Kochi');
+      assert.ok(data.results?.length > 0);
+    });
+    await check('Live road route', async () => {
+      const data = await request('/api/maps/route', { body: { points: [{ lat: 9.9816, lng: 76.2999 }, { lat: 10.5276, lng: 76.2144 }] } });
+      assert.ok(data.route?.distance > 1000 && data.route?.geometry);
+      assert.equal(data.trafficAvailable, false);
+    });
+    await check('Trip charger corridor and cached source disclosure', async () => {
+      const data = await request('/api/trips/chargers', { body: { points: [{ lat: 9.9816, lng: 76.2999 }, { lat: 10.5276, lng: 76.2144 }], corridorKm: 10, preferCache: true } });
+      assert.ok(Array.isArray(data.stations) && Array.isArray(data.rentals));
+      assert.ok(data.stations.length > 0);
+      assert.equal(data.queryComplete, false);
+      assert.match(data.warning || '', /cached|snapshot/i);
+    });
+  }
+
+  host = await check('Demo host login', () => login('host@edith.demo', 'EdithDemo123!'));
+  driver = await check('Demo driver login', () => login('driver@edith.demo', 'EdithDemo123!'));
+  await check('Unauthenticated rental creation is forbidden', () => request('/api/rentals', { body: {}, status: 401 }));
+  await check('Unauthenticated AI access is forbidden', () => request('/api/ai/listing-draft', { body: { notes: 'Synthetic test' }, status: 401 }));
+
+  if (host && driver) {
+    await check('Driver cannot read another account booking history', () => request(`/api/bookings/user/${host.user.id}`, { token: driver.token, status: 403 }));
+    await check('Driver cannot access admin dashboard', () => request('/api/admin/dashboard', { token: driver.token, status: 403 }));
+    if (flags.has('--skip-realtime')) skip('Authenticated WebSocket connection and booking event', 'Explicit --skip-realtime option.');
+    else {
+      await check('Authenticated WebSocket connection', () => new Promise((resolve, reject) => {
+        socket = io(api, { transports: ['websocket'], auth: { token: driver.token }, reconnection: false, timeout: 20000, forceNew: true });
+        const timer = setTimeout(() => { socket.disconnect(); reject(new Error('WebSocket connection timed out.')); }, 25000);
+        socket.on('booking.updated', event => updates.add(event.id));
+        socket.once('connect', () => { clearTimeout(timer); resolve(true); });
+        socket.once('connect_error', () => { clearTimeout(timer); socket.disconnect(); reject(new Error('The deployment rejected the Socket.IO WebSocket connection.')); });
+      }));
+    }
+
+    const start = new Date(Date.now() + 2 * 86400000);
+    start.setUTCHours(8, 0, 0, 0);
+    const end = new Date(start.getTime() + 4 * 3600000);
+    listing = await check('Host creates a synthetic dated rental listing', async () => {
+      const data = await request('/api/rentals', { token: host.token, status: 201, body: {
+        name: run, address: 'Synthetic QA fixture, Kochi - no real charger or payment', lat: 9.9816, lng: 76.2999,
+        hourlyRatePaise: 12500, published: true, connectorType: 'Type 2', currentType: 'AC', powerKw: 7.4,
+        parking: 'Synthetic QA parking bay.', accessInstructions: 'Synthetic public QA instructions.', restrictedAccessInstructions: 'SYNTHETIC-QA-RESTRICTED',
+        terms: 'Synthetic verification only; no money collected.', availabilityWindows: [{ startsAt: start.toISOString(), endsAt: end.toISOString() }],
+      } });
+      assert.ok(data.rental?.id);
+      return data.rental;
+    });
+    vehicle = await check('Driver saves a synthetic compatible vehicle', async () => {
+      const data = await request('/api/vehicles', { token: driver.token, status: 201, body: { model: run, vehicleType: 'CAR', connectorTypes: ['Type 2'], batteryCapacityKwh: 30, rangeKm: 200 } });
+      assert.ok(data.vehicle?.id);
+      return data.vehicle;
+    });
+    if (listing) {
+      await check('Public listing hides restricted access instructions', async () => {
+        const data = await request(`/api/rentals/${listing.id}`);
+        assert.ok(!Object.hasOwn(data.rental, 'restrictedAccessInstructions'));
+      });
+      await check('Driver cannot edit the host listing', () => request(`/api/rentals/${listing.id}`, { token: driver.token, method: 'PATCH', body: { published: false }, status: 403 }));
+    }
+    if (listing && vehicle) {
+      const selection = { stationId: listing.id, vehicleId: vehicle.id, slotStart: start.toISOString(), durationMinutes: 60 };
+      const quote = await check('Server quote computes hourly demo price', async () => {
+        const data = await request('/api/bookings/quote', { token: driver.token, body: selection });
+        assert.equal(data.quote?.totalPaise, 12500);
+        assert.equal(data.quote?.currency, 'INR');
+        assert.match(data.quote?.paymentLabel || '', /no money collected/i);
+        return data.quote;
+      });
+      if (quote) {
+        const payload = { ...selection, expectedTotalPaise: quote.totalPaise, expectedHourlyRatePaise: quote.hourlyRatePaise, idempotencyKey: randomUUID() };
+        const first = await check('Driver request remains pending host approval', async () => {
+          const data = await request('/api/bookings/request', { token: driver.token, status: 201, body: payload });
+          assert.ok(data.booking?.id);
+          bookings.push(data.booking.id);
+          assert.equal(data.booking.status, 'REQUESTED');
+          assert.ok(!Object.hasOwn(data.booking.station, 'restrictedAccessInstructions'));
+          return data.booking;
+        });
+        if (first) {
+          if (!flags.has('--skip-realtime')) {
+            if (socket?.connected) await check('Authenticated WebSocket receives owned booking event', () => waitForUpdate(first.id));
+            else skip('Authenticated WebSocket receives owned booking event', 'WebSocket connection failed.');
+          }
+          await check('Duplicate request key returns the same booking', async () => {
+            const data = await request('/api/bookings/request', { token: driver.token, status: 201, body: payload });
+            assert.equal(data.booking?.id, first.id);
+          });
+          await check('Driver cannot accept a rental request', () => request(`/api/bookings/${first.id}/action`, { token: driver.token, body: { action: 'accept' }, status: 403 }));
+          const second = await check('Pending requests do not reserve capacity', async () => {
+            const data = await request('/api/bookings/request', { token: driver.token, status: 201, body: { ...payload, idempotencyKey: randomUUID() } });
+            assert.ok(data.booking?.id && data.booking.id !== first.id);
+            bookings.push(data.booking.id);
+            assert.equal(data.booking.status, 'REQUESTED');
+            return data.booking;
+          });
+          const confirmed = await check('Host accepts and confirms the first request', async () => {
+            const data = await request(`/api/bookings/${first.id}/action`, { token: host.token, body: { action: 'accept', reason: 'Synthetic QA verification.' } });
+            assert.equal(data.booking?.status, 'CONFIRMED');
+            return data.booking;
+          });
+          if (confirmed) {
+            await check('Confirmed driver can read restricted arrival instructions', async () => {
+              const data = await request(`/api/bookings/${first.id}`, { token: driver.token });
+              assert.equal(data.booking?.station?.restrictedAccessInstructions, 'SYNTHETIC-QA-RESTRICTED');
+            });
+            await check('Reserved interval blocks a competing quote', async () => {
+              const data = await request('/api/bookings/quote', { token: driver.token, body: selection, status: 409 });
+              assert.equal(data.code, 'BOOKING_CONFLICT');
+            });
+            if (second) await check('Host cannot accept an overlapping pending request', async () => {
+              const data = await request(`/api/bookings/${second.id}/action`, { token: host.token, body: { action: 'accept' }, status: 409 });
+              assert.equal(data.code, 'BOOKING_CONFLICT');
+            });
+            await check('Driver cancels own confirmed demo booking', async () => {
+              const data = await request(`/api/bookings/${first.id}/action`, { token: driver.token, body: { action: 'cancel' } });
+              assert.equal(data.booking?.status, 'CANCELLED');
+            });
+          }
+        }
+      }
+    } else skip('Booking quote, request, acceptance, conflict and cancellation', 'Synthetic listing or vehicle creation failed.');
+
+    if (flags.has('--skip-ai')) skip('Live text, vision, multilingual guide, host insights and neural audio', 'Explicit --skip-ai option.');
+    else await verifyAI();
+  } else skip('Authenticated rental, AI and WebSocket journeys', 'Demo host or driver login failed.');
+
+  if (process.env.EDITH_ADMIN_EMAIL && process.env.EDITH_ADMIN_PASSWORD) {
+    const admin = await check('Private admin login', () => login(process.env.EDITH_ADMIN_EMAIL, process.env.EDITH_ADMIN_PASSWORD));
+    if (admin) {
+      await check('Admin dashboard', async () => {
+        const data = await request('/api/admin/dashboard', { token: admin.token });
+        assert.ok(Number.isInteger(data.activeBookingsCount));
+        assert.ok(Array.isArray(data.recentBookings));
+      });
+      await check('Admin history, slots, payments and energy reports', async () => {
+        for (const route of ['/api/admin/bookings?size=5', '/api/admin/available-slots', '/api/admin/payments?range=today', '/api/admin/electricity?range=today', '/api/admin/vehicles/usage?range=month']) {
+          const data = await request(route, { token: admin.token });
+          assert.ok(data && typeof data === 'object');
+        }
+      });
+    }
+  } else skip('Private admin login and reports', 'EDITH_ADMIN_EMAIL and EDITH_ADMIN_PASSWORD were not supplied.');
+}
+
+async function verifyAI() {
+  await check('Live text and vision models are configured', async () => {
+    const data = await request('/api/ai/status', { token: host.token });
+    assert.equal(data.configured, true);
+    assert.equal(data.visionConfigured, true);
+  });
+  await check('Live AI extracts a supported listing draft', async () => {
+    const data = await request('/api/ai/listing-draft', { token: host.token, body: { notes: 'Synthetic demo: Garden House Charger at Demo Lane, Fort Kochi. Type 2 connector, AC, 7.4 kW. INR 140 per hour. One covered car parking bay is included. Meet the host at the front gate. Please leave the bay clean.' } });
+    assert.equal(data.mode, 'AI');
+    assert.equal(data.draft?.powerKw, 7.4);
+    assert.equal(data.draft?.hourlyRatePaise, 14000);
+  });
+  await check('Live vision reads the synthetic charger label', async () => {
+    const image = fs.readFileSync(path.resolve(__dirname, '../public/demo/charger-label.png'));
+    const data = await request('/api/ai/listing-draft', { token: host.token, body: { notes: 'Read only this synthetic demo label. Other listing details are not supplied.', labelImage: { base64: image.toString('base64'), mimeType: 'image/png' } } });
+    assert.equal(data.mode, 'AI');
+    assert.equal(data.draft?.powerKw, 7.4);
+    assert.equal(data.draft?.currentType, 'AC');
+  });
+  await check('Live English guide cites listing records', async () => {
+    const data = await request('/api/ai/guide', { token: driver.token, body: { question: 'Compare the listed private chargers by hourly price and connector. What information must I still check before requesting?', language: 'en' } });
+    assert.equal(data.mode, 'AI');
+    assert.ok(data.sources?.some(source => source.kind === 'LISTING'));
+    assert.doesNotMatch(data.answer || '', /paise/i);
+    assert.ok(data.caveats?.some(caveat => /synthetic/i.test(caveat)));
+  });
+  await check('Live Malayalam guide explains host approval', async () => {
+    const data = await request('/api/ai/guide', { token: driver.token, body: { question: 'Does a pending private rental request reserve the charger? Explain host approval and demo payment.', language: 'ml' } });
+    assert.equal(data.mode, 'AI');
+    assert.match(data.answer || '', /[\u0D00-\u0D7F]/);
+  });
+  await check('Live AI explains host-owned aggregate insights', async () => {
+    const data = await request('/api/ai/host-insights', { token: host.token, body: {} });
+    assert.equal(data.mode, 'AI');
+    assert.ok(data.metrics?.ownedListings >= 1);
+  });
+  await check('Natural-language booking agent asks for missing details', async () => {
+    const data = await request('/api/concierge/agent/turn', { token: driver.token, body: { message: 'Find me a charger near Kochi.', settings: { mvpQuickBook: false } } });
+    assert.equal(data.stage, 'NEEDS');
+    assert.match(data.needs?.area || '', /kochi|cochin/i);
+    assert.ok(data.question && data.stateToken);
+    assert.ok(!data.booking && !data.draft, 'An incomplete request must not create a booking or quote.');
+    secrets.push(data.stateToken);
+  });
+  await check('Labelled offline AI fallback remains usable', async () => {
+    const data = await request('/api/ai/guide', { token: driver.token, body: { question: 'How does host acceptance work?', language: 'en', useDemoFallback: true } });
+    assert.equal(data.mode, 'DEMO_FALLBACK');
+  });
+  await check('Kokoro generates nonempty PCM WAV neural audio', async () => {
+    const data = await request('/api/concierge/speech', { token: driver.token, body: { text: 'Welcome to Edith. Your host approves private rental requests.' }, timeout: 300000, binary: true });
+    assert.match(data.headers.get('content-type') || '', /audio\/wav/i);
+    assert.equal(data.headers.get('x-voice-engine'), 'Kokoro-af_heart');
+    assert.ok(data.bytes.length > 1000);
+    assert.equal(data.bytes.subarray(0, 4).toString(), 'RIFF');
+    assert.equal(data.bytes.subarray(8, 12).toString(), 'WAVE');
+    assert.equal(data.bytes.readUInt16LE(20), 1);
+    assert.equal(data.bytes.readUInt32LE(24), 24000);
+    assert.ok(data.bytes.subarray(44).some(byte => byte !== 0), 'The waveform must contain audio samples.');
+  });
+}
+
+async function cleanup() {
+  socket?.disconnect();
+  if (driver) {
+    for (const id of bookings) await check('QA cleanup: cancel own booking fixture', async () => {
+      const data = await request(`/api/bookings/${id}/action`, { token: driver.token, body: { action: 'cancel' } });
+      assert.equal(data.booking?.status, 'CANCELLED');
+    });
+  }
+  if (host && listing) await check('QA cleanup: pause only the created listing', async () => {
+    const data = await request(`/api/rentals/${listing.id}`, { token: host.token, method: 'PATCH', body: { published: false } });
+    assert.equal(data.rental?.published, false);
+  });
+  report.fixtures.createdListings = listing ? 1 : 0;
+  report.fixtures.createdVehicles = vehicle ? 1 : 0;
+  report.fixtures.createdBookings = bookings.length;
+  report.fixtures.retained = 'Named synthetic QA records remain for audit; created listing is paused and bookings are cancelled when cleanup passes.';
+}
+
+(async () => {
+  try { await main(); }
+  catch (error) { report.checks.push({ label: 'Verifier execution', result: 'failed', error: safeMessage(error) }); console.error(safeMessage(error)); }
+  finally {
+    await cleanup();
+    report.completedAt = new Date().toISOString();
+    report.summary = { passed: report.checks.filter(item => item.result === 'passed').length, failed: report.checks.filter(item => item.result === 'failed').length, skipped: report.checks.filter(item => item.result === 'skipped').length };
+    report.passed = report.summary.failed === 0;
+    report.allChecksRun = report.summary.skipped === 0;
+    fs.mkdirSync(path.resolve(__dirname, '../test-results'), { recursive: true });
+    const artifact = path.resolve(__dirname, '../test-results/deployment-verification.json');
+    fs.writeFileSync(artifact, JSON.stringify(report, null, 2));
+    console.log(JSON.stringify({ checksPassed: report.summary.passed, checksFailed: report.summary.failed, checksSkipped: report.summary.skipped, passed: report.passed, allChecksRun: report.allChecksRun, artifact }, null, 2));
+    if (!report.passed) process.exitCode = 1;
+  }
+})();

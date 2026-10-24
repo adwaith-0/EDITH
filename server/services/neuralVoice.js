@@ -1,5 +1,6 @@
 const path=require('node:path');
 const fs=require('node:fs');
+const os=require('node:os');
 const {fail}=require('./rentalShared');
 let modelPromise,ready=false,working=false,lastError=null;
 const MODEL='onnx-community/Kokoro-82M-v1.0-ONNX';
@@ -9,7 +10,9 @@ async function prepare(){
     modelPromise=(async()=>{
       const {env,StyleTextToSpeech2Model,AutoTokenizer}=require('@huggingface/transformers');
       const {KokoroTTS}=require('kokoro-js');
-      env.cacheDir=path.resolve(__dirname,'../../.local/kokoro');fs.mkdirSync(env.cacheDir,{recursive:true});
+      // Deployed function files are read-only; model downloads belong in /tmp.
+      env.cacheDir=process.env.KOKORO_CACHE_DIR || (process.env.VERCEL ? path.join(os.tmpdir(),'edith-kokoro') : path.resolve(__dirname,'../../.local/kokoro'));
+      fs.mkdirSync(env.cacheDir,{recursive:true});
       const [model,tokenizer]=await Promise.all([
         StyleTextToSpeech2Model.from_pretrained(MODEL,{dtype:'q8',device:'cpu',session_options:{intra_op_num_threads:2,inter_op_num_threads:1}}),
         AutoTokenizer.from_pretrained(MODEL),

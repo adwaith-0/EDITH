@@ -138,3 +138,28 @@ Browser verification used the final production build. The guide answered that pe
 Final comparison validation uses server-formatted INR/hour and rated-power labels, returns every supplied listing as a source record, and appends server-owned synthetic-data and unknown-power caveats. The live rehearsal returned all four listing sources plus the three EDITH rules, correct INR100/120/180 hourly prices, and the unknown Harbour Studio power label. A live browser check also exercised the empty-host case (zero metrics and onboarding suggestions), the AI Host navigation entry, and 320px host/390px driver layouts without horizontal overflow. The browser recorded zero console errors. Comparison classification also treats explicitly synthetic host-created fixture names as demo data, matching the existing listing evidence rules. Extra screenshots: `test-results/ai-host-insights.jpg`, `test-results/ai-studio-mobile-390.jpg` and `test-results/ai-comparison-final.jpg`. The final comparison browser tab was retained with all four synthetic listings correctly labelled, and its snapshot is `test-results/ai-comparison-final.txt`. A scan of 145 tracked/unignored source files and 24 built client assets found zero configured-secret matches.
 
 The live label input is an intentionally clear synthetic illustration, not a representative real-equipment photo evaluation. Malayalam/Hindi output was exercised, but no human translation-quality study or new microphone test was performed. AI copy still needs review; image extraction cannot certify equipment, infer live status or publish a listing. No new training, database migration, operator integration, real payment or external message was performed.
+
+## Vercel preparation — 24 October 2026
+
+The hosted build completed successfully for both Next.js and the exported Express
+HTTP server using Vercel Services. Source checks passed: TypeScript, production
+build, and 93 tests, including real PostgreSQL conflict enforcement. Deployment
+inputs excluded local credentials, database files, build output and QA artifacts.
+
+The current local HTTP verifier completed 43 checks successfully and recorded one
+transient live text-model failure. A separate follow-up of that exact text feature
+passed in AI mode; the original failed report was retained. The checks included
+private administrator authorization, driver/host approval, request replay,
+conflicting acceptance, WebSocket events, maps, text/vision extraction, English and
+Malayalam guidance, host insights, a booking-agent follow-up, and a real Kokoro WAV.
+Evidence: ignored `test-results/deployment-verification-local-current.json` and
+`test-results/deployment-verification-local-current-followup.json`.
+
+A reproduced image-validation bug was fixed: a hyphenated equipment model such as
+`DEMO-74` no longer counts as a negative power measurement on one OCR line.
+Regression tests still reject negative power/rates, uncertain claims and facts
+without evidence. A direct live vision check passed with Type 2, AC and 7.4 kW.
+
+Hosted capability and workflow results must be recorded separately after the
+managed database is provisioned. A successful cloud build is not end-to-end
+verification of the deployed app.

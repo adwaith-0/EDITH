@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { API_BASE_URL } from '@/services/apiBase';
 
 export default function AdminLoginPage() {
     const router = useRouter();
@@ -16,7 +17,7 @@ export default function AdminLoginPage() {
         setLoading(true);
 
         try {
-            const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'}/api/auth/login`, {
+            const res = await fetch(`${API_BASE_URL}/api/auth/login`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ email, password }),
@@ -77,7 +78,7 @@ export default function AdminLoginPage() {
                                 value={email}
                                 onChange={(e) => setEmail(e.target.value)}
                                 className="w-full px-4 py-3 bg-white border border-gray-200 rounded-xl text-gray-950 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-emerald-600 focus:border-transparent transition-all"
-                                placeholder="admin@evcharge.com"
+                                placeholder="Your administrator email"
                                 required
                             />
                         </div>
@@ -116,8 +117,11 @@ export default function AdminLoginPage() {
                     </form>
 
                     <div className="mt-6 text-center text-sm text-gray-400">
-                        <a className="block mb-4 font-semibold text-gray-800" href="/">← Back to chargers</a><p>Local demo credentials:</p>
-                        <p className="text-gray-600 mt-1">admin@evcharge.com / Admin@123</p>
+                        <a className="block mb-4 font-semibold text-gray-800" href="/">← Back to chargers</a>
+                        {process.env.NODE_ENV === 'development' ? <>
+                            <p>Local demo credentials:</p>
+                            <p className="text-gray-600 mt-1">admin@evcharge.com / Admin@123</p>
+                        </> : <p>Use the private administrator account configured for this deployment.</p>}
                     </div>
                 </div>
             </div>

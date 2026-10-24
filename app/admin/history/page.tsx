@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { API_BASE_URL } from '@/services/apiBase';
 
 interface Booking {
     id: string;
@@ -35,7 +36,7 @@ export default function BookingHistoryPage() {
     const fetchBookings = useCallback(async (token: string, page: number, status: string) => {
         try {
             setLoading(true);
-            let url = `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'}/api/admin/bookings?page=${page}&size=20`;
+            let url = `${API_BASE_URL}/api/admin/bookings?page=${page}&size=20`;
             if (status !== 'ALL') {
                 url += `&status=${status}`;
             }
@@ -86,7 +87,7 @@ export default function BookingHistoryPage() {
         if (!token) return;
 
         try {
-            const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'}/api/admin/booking/force-cancel`, {
+            const res = await fetch(`${API_BASE_URL}/api/admin/booking/force-cancel`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',

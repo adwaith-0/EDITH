@@ -3,7 +3,9 @@
  * Frontend service for calling admin API endpoints
  */
 
-const API_BASE = `${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'}/api`;
+import { API_BASE_URL } from './apiBase';
+
+const API_BASE = `${API_BASE_URL}/api`;
 
 function getToken(): string | null {
     if (typeof window === 'undefined') return null;

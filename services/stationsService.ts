@@ -2,8 +2,8 @@ import { ChargingStation } from '@/types/station';
 import { LatLng } from '@/types/map';
 import { directionsService } from './directionsService';
 import { externalStationsService } from './externalStationsService';
+import { API_BASE_URL as API_URL } from './apiBase';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 export interface EnrichedStation extends ChargingStation {
     distanceText?: string; durationText?: string; distanceMeters?: number; durationSeconds?: number; polyline?: string;
 }

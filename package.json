@@ -2,7 +2,11 @@
   "name": "ev-mobility-platform",
   "version": "1.0.0",
   "private": true,
+  "engines": {
+    "node": "24.x"
+  },
   "scripts": {
+    "postinstall": "prisma generate",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
@@ -10,6 +14,7 @@
     "voice:prepare": "node scripts/prepare-voice.js",
     "demo:ai-assets": "node scripts/prepare-ai-demo.mjs",
     "test:ai-live": "node scripts/check-ai-demo-live.cjs",
+    "test:deployment": "node scripts/check-deployment.cjs",
     "lint": "next lint",
     "type-check": "tsc --noEmit",
     "server": "node server/index.js",
